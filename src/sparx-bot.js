@@ -43,11 +43,24 @@ export class SparxBot {
     this.page = await context.newPage();
   }
 
+  async dismissCookieBanner() {
+    const cookieBtn = await this.page.waitForSelector(
+      '#cookiescript_accept, #cookiescript_close, [id*="cookiescript"] button, button:has-text("Accept"), button:has-text("Accept All"), button:has-text("OK"), .cookie-accept',
+      { timeout: 3000 }
+    ).catch(() => null);
+    if (cookieBtn) {
+      await cookieBtn.click();
+      await delay(500);
+    }
+  }
+
   async selectSchool(schoolSlug) {
     await this.page.goto(SELECT_SCHOOL_URL, { waitUntil: 'networkidle' });
 
     const alreadyOnAuth = this.page.url().includes('auth.sparx-learning.com');
     if (alreadyOnAuth) return;
+
+    await this.dismissCookieBanner();
 
     const input = await this.page.waitForSelector(
       'input[placeholder*="school" i]',
