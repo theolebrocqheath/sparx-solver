@@ -14,8 +14,16 @@ export class SparxBot {
   }
 
   async launchBrowser(headless = true) {
+    const launchOptions = { headless };
+    if (!headless) {
+      launchOptions.args = [
+        '--disable-blink-features=AutomationControlled',
+        '--no-first-run',
+        '--no-default-browser-check',
+      ];
+    }
     try {
-      this.browser = await chromium.launch({ headless });
+      this.browser = await chromium.launch(launchOptions);
     } catch (err) {
       if (err.message.includes("Executable doesn't exist") || err.message.includes('browserType.launch')) {
         throw new Error('Browser not installed yet. Run: npx playwright install chromium');
@@ -27,11 +35,19 @@ export class SparxBot {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       viewport: { width: 1280, height: 800 },
     });
+    if (!headless) {
+      await context.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      });
+    }
     this.page = await context.newPage();
   }
 
   async selectSchool(schoolSlug) {
     await this.page.goto(SELECT_SCHOOL_URL, { waitUntil: 'networkidle' });
+
+    const alreadyOnAuth = this.page.url().includes('auth.sparx-learning.com');
+    if (alreadyOnAuth) return;
 
     const input = await this.page.waitForSelector(
       'input[placeholder*="school" i]',
@@ -53,10 +69,16 @@ export class SparxBot {
     const continueBtn = await this.page.waitForSelector(
       'button:has-text("Continue")',
       { timeout: 5000 }
-    );
-    await continueBtn.click();
+    ).catch(() => null);
 
-    await this.page.waitForURL('**/auth.sparx-learning.com/**', { timeout: 15000 });
+    if (continueBtn) {
+      await continueBtn.click();
+    }
+
+    await this.page.waitForURL(
+      url => url.href.includes('auth.sparx-learning.com') || url.href.includes('accounts.google.com'),
+      { timeout: 15000 }
+    );
     await this.page.waitForLoadState('networkidle');
   }
 
@@ -91,19 +113,22 @@ export class SparxBot {
   }
 
   async loginWithGoogle(schoolSlug) {
-    // Open a VISIBLE browser so the user can complete Google sign-in
     await this.launchBrowser(false);
     await this.selectSchool(schoolSlug);
 
-    const googleBtn = await this.page.waitForSelector(
-      'button:has-text("Google"), a:has-text("Google")',
-      { timeout: 10000 }
-    );
-    await googleBtn.click();
+    const currentUrl = this.page.url();
+    if (!currentUrl.includes('accounts.google.com')) {
+      const googleBtn = await this.page.waitForSelector(
+        'button:has-text("Google"), a:has-text("Google")',
+        { timeout: 10000 }
+      );
+      await googleBtn.click();
+    }
 
-    // Wait for the user to complete Google OAuth and land on the Sparx dashboard
-    // This may take a while as the user manually signs into Google
-    await this.page.waitForURL('**/maths.sparx-learning.com/**', { timeout: 300000 });
+    await this.page.waitForURL(
+      url => url.href.includes('maths.sparx-learning.com') || url.href.includes('science.sparx-learning.com') || url.href.includes('reader.sparx-learning.com'),
+      { timeout: 300000 }
+    );
     await this.page.waitForLoadState('networkidle');
 
     return this.getStudentInfo('Student');
