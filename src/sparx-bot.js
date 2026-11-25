@@ -262,7 +262,7 @@ export class SparxBot {
         const answer = await extractAnswer(this.page, questionData);
 
         if (answer) {
-          onProgress({ type: 'answering', message: `Found answer for Q${questionNum}`, questionNum });
+          onProgress({ type: 'answering', message: `Q${questionNum} → ${answer.value || 'clicking option'}`, questionNum });
           await this.submitAnswer(answer);
           solved++;
         } else {
@@ -296,30 +296,61 @@ export class SparxBot {
 
   async extractQuestion() {
     return await this.page.evaluate(() => {
-      const selectors = [
-        '[class*="question-text"]', '[class*="problem"]', '[class*="stimulus"]',
-        '[class*="prompt"]', '[data-testid*="question"]', '.question', 'main p',
-      ];
+      function readMathText(el) {
+        if (!el) return '';
+        let result = '';
+        for (const node of el.childNodes) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            result += node.textContent;
+          } else if (node.nodeType === Node.ELEMENT_NODE) {
+            const cls = (node.className || '').toLowerCase();
+            const tag = node.tagName.toLowerCase();
+            if (cls.includes('fraction') || cls.includes('frac')) {
+              const parts = node.querySelectorAll('span, div');
+              if (parts.length >= 2) {
+                const num = parts[0].textContent.trim();
+                const den = parts[parts.length - 1].textContent.trim();
+                result += `${num}/${den}`;
+                continue;
+              }
+            }
+            if (tag === 'sup') { result += node.textContent; continue; }
+            if (tag === 'sub') { result += node.textContent; continue; }
+            result += readMathText(node);
+          }
+        }
+        return result;
+      }
 
-      let text = '';
-      for (const sel of selectors) {
-        const el = document.querySelector(sel);
-        if (el?.textContent?.trim()) { text = el.textContent.trim(); break; }
+      const mainContent = document.querySelector('main') || document.querySelector('[class*="content"]') || document.body;
+      let text = readMathText(mainContent).replace(/\s+/g, ' ').trim();
+
+      if (!text || text.length < 5) {
+        const selectors = [
+          '[class*="question"]', '[class*="problem"]', '[class*="stimulus"]',
+          '[class*="prompt"]', 'main p', 'main div',
+        ];
+        for (const sel of selectors) {
+          const el = document.querySelector(sel);
+          if (el?.textContent?.trim().length > 5) {
+            text = readMathText(el).replace(/\s+/g, ' ').trim();
+            break;
+          }
+        }
       }
 
       const hasMultipleChoice = document.querySelectorAll('[class*="choice"], [class*="option"], input[type="radio"]').length > 0;
-      const hasNumberInput = document.querySelector('input[type="number"], input[inputmode="numeric"]') !== null;
-      const hasTextInput = document.querySelector('input[type="text"]:not([name*="school"]):not([name*="user"]):not([name*="pass"])') !== null;
-      const hasDragDrop = document.querySelector('[draggable="true"], [class*="drag"]') !== null;
+      const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])');
+      const hasInput = Array.from(inputs).some(inp => {
+        const name = (inp.name || '').toLowerCase();
+        return !name.includes('school') && !name.includes('user') && !name.includes('pass');
+      });
 
       let type = 'unknown';
       if (hasMultipleChoice) type = 'multiple_choice';
-      else if (hasNumberInput) type = 'number';
-      else if (hasTextInput) type = 'text';
-      else if (hasDragDrop) type = 'drag_drop';
+      else if (hasInput) type = 'text';
 
-      const images = Array.from(document.querySelectorAll('[class*="question"] img, main img')).map((img) => img.src);
-      return { text, type, images };
+      return { text, type, images: [] };
     });
   }
 
@@ -327,16 +358,21 @@ export class SparxBot {
     if (answer.type === 'click') {
       await this.page.click(answer.selector);
     } else if (answer.type === 'type') {
-      const input = await this.page.waitForSelector(answer.selector, { timeout: 5000 });
-      await input.fill(String(answer.value));
-    } else if (answer.type === 'select') {
-      await this.page.click(`text="${answer.value}"`);
+      const input = await this.page.waitForSelector(
+        'input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([name*="school"]):not([name*="user"]):not([name*="pass"]), [contenteditable="true"]',
+        { timeout: 5000 }
+      ).catch(() => null);
+      if (input) {
+        await input.click();
+        await delay(200);
+        await input.fill(String(answer.value));
+      }
     }
 
     await delay(800 + Math.random() * 1200);
 
     const submitBtn = await this.page
-      .waitForSelector('button:has-text("Submit"), button:has-text("Next"), button:has-text("Check"), button[class*="submit"], button[class*="next"]', { timeout: 5000 })
+      .waitForSelector('button:has-text("Submit"), button:has-text("Check"), button[class*="submit"], button[class*="check"]', { timeout: 5000 })
       .catch(() => null);
 
     if (submitBtn) {

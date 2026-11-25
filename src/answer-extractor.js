@@ -1,228 +1,146 @@
-/**
- * Extracts answers from Sparx's page data.
- * Sparx often embeds answer data in the page's JavaScript state,
- * network responses, or DOM attributes.
- */
-
 export async function extractAnswer(page, questionData) {
-  // Strategy 1: Check for answers in the page's JS state / React internals
   const fromState = await extractFromPageState(page);
   if (fromState) return fromState;
 
-  // Strategy 2: Check for answers in data attributes
-  const fromAttributes = await extractFromAttributes(page, questionData);
-  if (fromAttributes) return fromAttributes;
+  const solved = solveQuestion(questionData.text);
+  if (solved !== null) {
+    return { type: 'type', value: solved };
+  }
 
-  // Strategy 3: For multiple choice, try to identify the correct option
   if (questionData.type === 'multiple_choice') {
     const fromChoices = await extractFromChoices(page);
     if (fromChoices) return fromChoices;
   }
 
-  // Strategy 4: Check intercepted network responses
-  const fromNetwork = await extractFromNetworkData(page);
-  if (fromNetwork) return fromNetwork;
+  return null;
+}
 
-  // Strategy 5: Look for validation/answer data in inline scripts
-  const fromScripts = await extractFromScripts(page);
-  if (fromScripts) return fromScripts;
+function solveQuestion(text) {
+  if (!text) return null;
+  const t = text.replace(/\s+/g, ' ').trim();
+
+  // "Write X/Y as a percentage"
+  let m = t.match(/(?:write|convert|express)\s+(\d+)\s*[\/÷]\s*(\d+)\s+as\s+a\s+percentage/i);
+  if (m) return String((parseInt(m[1]) / parseInt(m[2])) * 100);
+
+  // "What is X% of Y"
+  m = t.match(/what\s+is\s+(\d+(?:\.\d+)?)\s*%\s+of\s+(\d+(?:\.\d+)?)/i);
+  if (m) return String((parseFloat(m[1]) / 100) * parseFloat(m[2]));
+
+  // "X% of Y"
+  m = t.match(/(?:find|calculate|work out)\s+(\d+(?:\.\d+)?)\s*%\s+of\s+(\d+(?:\.\d+)?)/i);
+  if (m) return String((parseFloat(m[1]) / 100) * parseFloat(m[2]));
+
+  // "Write X as a fraction of Y" → X/Y simplified
+  m = t.match(/write\s+(\d+)\s+as\s+a\s+fraction\s+of\s+(\d+)/i);
+  if (m) { const f = simplifyFraction(parseInt(m[1]), parseInt(m[2])); return `${f[0]}/${f[1]}`; }
+
+  // "Simplify X/Y" or "Simplify X:Y"
+  m = t.match(/simplify\s+(\d+)\s*[\/÷]\s*(\d+)/i);
+  if (m) { const f = simplifyFraction(parseInt(m[1]), parseInt(m[2])); return `${f[0]}/${f[1]}`; }
+  m = t.match(/simplify\s+(\d+)\s*:\s*(\d+)/i);
+  if (m) { const f = simplifyFraction(parseInt(m[1]), parseInt(m[2])); return `${f[0]}:${f[1]}`; }
+
+  // "Convert X.Y to a percentage"
+  m = t.match(/convert\s+(\d+\.\d+)\s+to\s+a\s+percentage/i);
+  if (m) return String(parseFloat(m[1]) * 100);
+
+  // "Convert X/Y to a decimal"
+  m = t.match(/convert\s+(\d+)\s*[\/÷]\s*(\d+)\s+to\s+a\s+decimal/i);
+  if (m) return String(parseInt(m[1]) / parseInt(m[2]));
+
+  // "Convert X% to a decimal"
+  m = t.match(/convert\s+(\d+(?:\.\d+)?)\s*%\s+to\s+a\s+decimal/i);
+  if (m) return String(parseFloat(m[1]) / 100);
+
+  // "X + Y", "X - Y", "X × Y", "X ÷ Y" (calculate/work out/evaluate)
+  m = t.match(/(?:calculate|work out|evaluate|find|what is)\s+(-?\d+(?:\.\d+)?)\s*([+\-×x*÷\/])\s*(-?\d+(?:\.\d+)?)/i);
+  if (m) {
+    const a = parseFloat(m[1]), b = parseFloat(m[3]);
+    const op = m[2];
+    if (op === '+') return String(a + b);
+    if (op === '-' || op === '−') return String(a - b);
+    if ('×x*'.includes(op)) return String(a * b);
+    if (op === '÷' || op === '/') return String(a / b);
+  }
+
+  // "X squared" or "X²"
+  m = t.match(/(\d+)\s*(?:squared|²)/i);
+  if (m) return String(parseInt(m[1]) ** 2);
+
+  // "X cubed" or "X³"
+  m = t.match(/(\d+)\s*(?:cubed|³)/i);
+  if (m) return String(parseInt(m[1]) ** 3);
+
+  // "square root of X"
+  m = t.match(/square\s+root\s+of\s+(\d+)/i);
+  if (m) { const r = Math.sqrt(parseInt(m[1])); return Number.isInteger(r) ? String(r) : null; }
+
+  // "X/Y of Z" (fraction of a number)
+  m = t.match(/(\d+)\s*[\/÷]\s*(\d+)\s+of\s+(\d+)/i);
+  if (m) return String((parseInt(m[1]) / parseInt(m[2])) * parseInt(m[3]));
+
+  // "increase/decrease X by Y%"
+  m = t.match(/increase\s+(\d+(?:\.\d+)?)\s+by\s+(\d+(?:\.\d+)?)\s*%/i);
+  if (m) return String(parseFloat(m[1]) * (1 + parseFloat(m[2]) / 100));
+  m = t.match(/decrease\s+(\d+(?:\.\d+)?)\s+by\s+(\d+(?:\.\d+)?)\s*%/i);
+  if (m) return String(parseFloat(m[1]) * (1 - parseFloat(m[2]) / 100));
+
+  // "round X to Y decimal places"
+  m = t.match(/round\s+(\d+\.\d+)\s+to\s+(\d+)\s+decimal\s+place/i);
+  if (m) return String(parseFloat(parseFloat(m[1]).toFixed(parseInt(m[2]))));
+
+  // "round X to the nearest 10/100/1000"
+  m = t.match(/round\s+(\d+(?:\.\d+)?)\s+to\s+the\s+nearest\s+(\d+)/i);
+  if (m) { const n = parseFloat(m[1]), r = parseInt(m[2]); return String(Math.round(n / r) * r); }
 
   return null;
 }
 
-async function extractFromPageState(page) {
-  return await page.evaluate(() => {
-    // Sparx apps are React-based — dig into React fiber/state
-    // Look for answer data in React component state
-    const root = document.getElementById('root') || document.getElementById('app');
-    if (!root?._reactRootContainer && !root?.__reactFiber) return null;
+function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
 
-    // Walk React fiber tree looking for answer-related state
-    function findInFiber(fiber, depth = 0) {
-      if (!fiber || depth > 20) return null;
-
-      const state = fiber.memoizedState;
-      const props = fiber.memoizedProps;
-
-      // Look for answer/solution data in props
-      if (props) {
-        if (props.answer !== undefined) return props.answer;
-        if (props.solution !== undefined) return props.solution;
-        if (props.correctAnswer !== undefined) return props.correctAnswer;
-        if (props.correct !== undefined) return props.correct;
-        if (props.result?.answer) return props.result.answer;
-      }
-
-      // Check state hooks
-      let hook = state;
-      while (hook) {
-        if (hook.queue?.lastRenderedState) {
-          const s = hook.queue.lastRenderedState;
-          if (s?.answer) return s.answer;
-          if (s?.solution) return s.solution;
-          if (s?.correctAnswer) return s.correctAnswer;
-        }
-        hook = hook.next;
-      }
-
-      // Recurse into children
-      const childResult = findInFiber(fiber.child, depth + 1);
-      if (childResult) return childResult;
-      return findInFiber(fiber.sibling, depth + 1);
-    }
-
-    // Get React fiber from root
-    const fiberKey = Object.keys(root).find(
-      (k) => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance')
-    );
-    if (fiberKey) {
-      const fiber = root[fiberKey];
-      const answer = findInFiber(fiber);
-      if (answer) {
-        if (typeof answer === 'string' || typeof answer === 'number') {
-          return { type: 'type', selector: 'input', value: answer };
-        }
-        if (answer.index !== undefined) {
-          return {
-            type: 'click',
-            selector: `[class*="choice"]:nth-child(${answer.index + 1}), [class*="option"]:nth-child(${answer.index + 1})`,
-          };
-        }
-      }
-    }
-
-    return null;
-  });
+function simplifyFraction(n, d) {
+  const g = gcd(Math.abs(n), Math.abs(d));
+  return [n / g, d / g];
 }
 
-async function extractFromAttributes(page, questionData) {
+async function extractFromPageState(page) {
   return await page.evaluate(() => {
-    // Look for data attributes that might contain answers
-    const answerAttrs = [
-      'data-answer',
-      'data-correct',
-      'data-correct-answer',
-      'data-solution',
-      'data-value',
-      'data-expected',
-    ];
+    const root = document.getElementById('root') || document.getElementById('app');
+    if (!root) return null;
+    const fiberKey = Object.keys(root).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
+    if (!fiberKey) return null;
 
-    for (const attr of answerAttrs) {
-      const el = document.querySelector(`[${attr}]`);
-      if (el) {
-        const val = el.getAttribute(attr);
-        if (val) {
-          const input = document.querySelector('input[type="number"], input[type="text"]');
-          if (input) {
-            return { type: 'type', selector: `[${attr}]`, value: val };
-          }
-          return { type: 'select', value: val };
+    function findInFiber(fiber, depth = 0) {
+      if (!fiber || depth > 20) return null;
+      const props = fiber.memoizedProps;
+      if (props) {
+        for (const key of ['answer', 'solution', 'correctAnswer', 'correct']) {
+          if (props[key] !== undefined) return props[key];
         }
+        if (props.result?.answer) return props.result.answer;
       }
+      return findInFiber(fiber.child, depth + 1) || findInFiber(fiber.sibling, depth + 1);
     }
 
-    // Check aria-labels for answer hints
-    const options = document.querySelectorAll('[role="radio"], [role="option"], [class*="choice"]');
-    for (const opt of options) {
-      const label = opt.getAttribute('aria-label') || '';
-      if (label.toLowerCase().includes('correct')) {
-        return { type: 'click', selector: `[aria-label="${label}"]` };
-      }
+    const answer = findInFiber(root[fiberKey]);
+    if (answer && (typeof answer === 'string' || typeof answer === 'number')) {
+      return { type: 'type', value: String(answer) };
     }
-
     return null;
   });
 }
 
 async function extractFromChoices(page) {
   return await page.evaluate(() => {
-    // For multiple choice: look for distinguishing marks on the correct option
-    const choices = document.querySelectorAll(
-      '[class*="choice"], [class*="option"], [role="radio"], label:has(input[type="radio"])'
-    );
-
+    const choices = document.querySelectorAll('[class*="choice"], [class*="option"], [role="radio"]');
     for (const choice of choices) {
       const classes = choice.className || '';
-      const dataAttrs = Object.keys(choice.dataset).join(' ');
-
-      // Check if any class or data attribute hints at correctness
-      if (
-        classes.includes('correct') ||
-        dataAttrs.includes('correct') ||
-        choice.dataset.correct === 'true'
-      ) {
-        return { type: 'click', selector: `.${classes.split(' ').find((c) => c.includes('correct')) || 'correct'}` };
+      if (classes.includes('correct') || choice.dataset.correct === 'true') {
+        const idx = Array.from(choices).indexOf(choice);
+        return { type: 'click', selector: `[class*="choice"]:nth-child(${idx + 1})` };
       }
     }
-
-    // Check if the choices have pre-loaded result styling
-    for (const choice of choices) {
-      const style = window.getComputedStyle(choice);
-      const bg = style.backgroundColor;
-      // Green-ish backgrounds often indicate correct answers in pre-loaded state
-      if (bg && bg.includes('rgb') && !bg.includes('255, 255, 255')) {
-        const rgb = bg.match(/\d+/g)?.map(Number);
-        if (rgb && rgb[1] > rgb[0] && rgb[1] > rgb[2]) {
-          const idx = Array.from(choices).indexOf(choice);
-          return {
-            type: 'click',
-            selector: `[class*="choice"]:nth-child(${idx + 1}), [class*="option"]:nth-child(${idx + 1})`,
-          };
-        }
-      }
-    }
-
-    return null;
-  });
-}
-
-async function extractFromNetworkData(page) {
-  // Intercept API responses that might contain answer data
-  // This needs to be set up before navigation ideally, but we can check
-  // the performance entries for cached responses
-  return await page.evaluate(() => {
-    // Check performance entries for API calls that returned answer data
-    const entries = performance.getEntriesByType('resource');
-    for (const entry of entries) {
-      if (
-        entry.name.includes('/api/') &&
-        (entry.name.includes('answer') ||
-          entry.name.includes('solution') ||
-          entry.name.includes('question'))
-      ) {
-        // The URL exists but we can't read the response from perf entries
-        // This is more of a signal that answer data might be available via XHR
-        return null;
-      }
-    }
-    return null;
-  });
-}
-
-async function extractFromScripts(page) {
-  return await page.evaluate(() => {
-    // Look through inline script tags for answer data
-    const scripts = document.querySelectorAll('script:not([src])');
-    for (const script of scripts) {
-      const text = script.textContent;
-      if (!text) continue;
-
-      // Look for JSON data containing answers
-      const patterns = [
-        /["']answer["']\s*:\s*["']([^"']+)["']/i,
-        /["']correctAnswer["']\s*:\s*["']([^"']+)["']/i,
-        /["']solution["']\s*:\s*["']([^"']+)["']/i,
-        /correct_answer\s*=\s*["']([^"']+)["']/i,
-      ];
-
-      for (const pattern of patterns) {
-        const match = text.match(pattern);
-        if (match) {
-          return { type: 'type', selector: 'input', value: match[1] };
-        }
-      }
-    }
-
     return null;
   });
 }
