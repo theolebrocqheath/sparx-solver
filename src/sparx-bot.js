@@ -44,14 +44,10 @@ export class SparxBot {
   }
 
   async dismissCookieBanner() {
-    const cookieBtn = await this.page.waitForSelector(
-      '#cookiescript_accept, #cookiescript_close, [id*="cookiescript"] button, button:has-text("Accept"), button:has-text("Accept All"), button:has-text("OK"), .cookie-accept',
-      { timeout: 3000 }
-    ).catch(() => null);
-    if (cookieBtn) {
-      await cookieBtn.click();
-      await delay(500);
-    }
+    await this.page.evaluate(() => {
+      document.querySelectorAll('[id*="cookiescript"], [class*="cookie-banner"], [class*="cookie-consent"], [class*="consent-banner"]').forEach(el => el.remove());
+    });
+    await delay(300);
   }
 
   async selectSchool(schoolSlug) {
