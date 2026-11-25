@@ -189,8 +189,8 @@ export class SparxBot {
         const fullText = el.textContent?.trim() || '';
         if (!fullText.includes('Homework due') && !fullText.includes('homework due')) return;
 
-        const titleMatch = fullText.match(/Homework due\s+\w+\s+\d+\w*\s+\w+\s+\d+\w*/i);
-        const name = titleMatch ? titleMatch[0] : fullText.split(/Bookwork|Completed|Not started|In progress/i)[0].trim();
+        const titleMatch = fullText.match(/Homework due\s+\w+\s+\d+\w*\s+\w+\s+\d+(?:am|pm)/i);
+        const name = titleMatch ? titleMatch[0] : fullText.split(/Bookwork|Completed|Not started|In progress|Start/i)[0].trim();
 
         if (seen.has(name)) return;
         seen.add(name);
@@ -240,14 +240,26 @@ export class SparxBot {
       onProgress({ type: 'progress', message: `Working on question ${questionNum}...`, questionNum, solved, failed });
 
       const isComplete = await this.page.evaluate(() => {
-        const body = document.body.innerText.toLowerCase();
-        return (
-          body.includes('well done') ||
-          body.includes('all caught up') ||
-          body.includes('completed') ||
-          body.includes('100%') ||
-          document.querySelector('[class*="complete"], [class*="finished"], [class*="done"]') !== null
-        );
+        const url = window.location.href;
+        if (url.includes('summary') || url.includes('complete') || url.includes('results')) return true;
+
+        const main = document.querySelector('main') || document.querySelector('[class*="content"]');
+        if (!main) return false;
+        const mainText = main.innerText.toLowerCase();
+
+        const hasCompletionMessage =
+          mainText.includes('well done') ||
+          mainText.includes('all caught up') ||
+          mainText.includes('you have completed') ||
+          mainText.includes('task complete') ||
+          mainText.includes('all tasks complete');
+
+        const hasNoQuestions =
+          !document.querySelector('input:not([type="hidden"])') &&
+          !document.querySelector('[class*="choice"], [class*="option"]') &&
+          !document.querySelector('[class*="question"]');
+
+        return hasCompletionMessage && hasNoQuestions;
       });
 
       if (isComplete) {
@@ -278,11 +290,16 @@ export class SparxBot {
 
       await humanDelay();
 
-      const stillSamePage = await this.page.evaluate(() => {
-        return !document.querySelector('[class*="question"], [class*="problem"], [class*="task-content"]');
+      const hasContent = await this.page.evaluate(() => {
+        return !!(
+          document.querySelector('input:not([type="hidden"])') ||
+          document.querySelector('[class*="choice"], [class*="option"]') ||
+          document.querySelector('[class*="question"]') ||
+          document.querySelector('[class*="stimulus"]')
+        );
       });
 
-      if (stillSamePage && questionNum > 2) {
+      if (!hasContent && questionNum > 2) {
         onProgress({ type: 'status', message: 'No more questions detected', solved, failed });
         break;
       }
