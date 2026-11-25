@@ -320,7 +320,7 @@ export class SparxBot {
           if (node.nodeType === Node.TEXT_NODE) {
             result += node.textContent;
           } else if (node.nodeType === Node.ELEMENT_NODE) {
-            const cls = (node.className || '').toLowerCase();
+            const cls = (typeof node.className === 'string' ? node.className : '').toLowerCase();
             const tag = node.tagName.toLowerCase();
             if (cls.includes('fraction') || cls.includes('frac')) {
               const parts = node.querySelectorAll('span, div');
