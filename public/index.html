@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sparx Solver</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Sparx Solver</h1>
+      <p class="subtitle">Automate your Sparx homework</p>
+    </header>
+
+    <!-- Login Screen -->
+    <div id="login-screen" class="screen active">
+      <div class="card">
+        <h2>Log In</h2>
+        <form id="login-form">
+          <div class="field">
+            <label for="school">School Name</label>
+            <input type="text" id="school" placeholder="e.g. Greenwood Academy" required>
+          </div>
+          <div class="field">
+            <label for="username">Username</label>
+            <input type="text" id="username" placeholder="Your Sparx username" required>
+          </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <input type="password" id="password" placeholder="Your Sparx password" required>
+          </div>
+          <button type="submit" id="login-btn">
+            <span class="btn-text">Log In</span>
+            <span class="spinner hidden"></span>
+          </button>
+          <p id="login-error" class="error hidden"></p>
+        </form>
+      </div>
+    </div>
+
+    <!-- Dashboard -->
+    <div id="dashboard-screen" class="screen">
+      <div class="top-bar">
+        <div>
+          <span class="greeting">Hello, <strong id="student-name"></strong></span>
+          <span class="module-badge" id="module-badge">maths</span>
+        </div>
+        <button id="logout-btn" class="btn-secondary">Log Out</button>
+      </div>
+
+      <div class="card">
+        <h2>Your Homework</h2>
+        <div id="homework-loading" class="loading">Loading homework...</div>
+        <div id="homework-list" class="hidden"></div>
+        <p id="homework-empty" class="muted hidden">No homework found. You might be all caught up!</p>
+      </div>
+    </div>
+
+    <!-- Solver -->
+    <div id="solver-screen" class="screen">
+      <button id="back-btn" class="btn-secondary">&larr; Back to Homework</button>
+      <div class="card">
+        <h2 id="task-title">Solving...</h2>
+        <div class="stats-row">
+          <div class="stat">
+            <span class="stat-num" id="stat-solved">0</span>
+            <span class="stat-label">Solved</span>
+          </div>
+          <div class="stat">
+            <span class="stat-num" id="stat-failed">0</span>
+            <span class="stat-label">Skipped</span>
+          </div>
+          <div class="stat">
+            <span class="stat-num" id="stat-current">0</span>
+            <span class="stat-label">Current Q</span>
+          </div>
+        </div>
+        <div id="progress-bar-container">
+          <div id="progress-bar"></div>
+        </div>
+        <div id="log" class="log"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
