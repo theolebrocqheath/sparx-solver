@@ -184,9 +184,10 @@ export class SparxBot {
       const tasks = [];
       const seen = new Set();
 
-      const allElements = document.querySelectorAll('a, button, [role="button"], [class*="package"], [class*="task"], [class*="homework"]');
-      allElements.forEach((el) => {
+      const allLinks = document.querySelectorAll('a[href]');
+      allLinks.forEach((el) => {
         const fullText = el.textContent?.trim() || '';
+        const href = el.href || '';
         if (!fullText.includes('Homework due') && !fullText.includes('homework due')) return;
 
         const titleMatch = fullText.match(/Homework due\s+\w+\s+\d+\w*\s+\w+\s+\d+(?:am|pm)/i);
@@ -199,21 +200,27 @@ export class SparxBot {
         const inProgress = /In progress/i.test(fullText);
         const status = isCompleted ? 'Completed' : inProgress ? 'In progress' : 'Not started';
 
-        tasks.push({
-          name,
-          status,
-          questions: '',
-          url: el.href || el.closest('a')?.href || '',
-        });
+        tasks.push({ name, status, questions: '', url: href });
       });
 
       if (tasks.length === 0) {
-        document.querySelectorAll('a[href*="task"], a[href*="package"], a[href*="homework"]').forEach((a) => {
-          const text = a.textContent?.trim();
-          if (text && !seen.has(text)) {
-            seen.add(text);
-            tasks.push({ name: text, status: '', questions: '', url: a.href });
-          }
+        const allElements = document.querySelectorAll('button, [role="button"], [class*="package"], [class*="task"], [class*="homework"]');
+        allElements.forEach((el) => {
+          const fullText = el.textContent?.trim() || '';
+          if (!fullText.includes('Homework due') && !fullText.includes('homework due')) return;
+
+          const titleMatch = fullText.match(/Homework due\s+\w+\s+\d+\w*\s+\w+\s+\d+(?:am|pm)/i);
+          const name = titleMatch ? titleMatch[0] : fullText.split(/Bookwork|Completed|Not started|In progress|Start/i)[0].trim();
+
+          if (seen.has(name)) return;
+          seen.add(name);
+
+          const isCompleted = /Completed/i.test(fullText);
+          const inProgress = /In progress/i.test(fullText);
+          const status = isCompleted ? 'Completed' : inProgress ? 'In progress' : 'Not started';
+
+          const link = el.closest('a');
+          tasks.push({ name, status, questions: '', url: link?.href || '' });
         });
       }
 
@@ -223,35 +230,103 @@ export class SparxBot {
     return homework;
   }
 
-  async solveTask(taskUrl, onProgress) {
+  async solveTask(taskUrl, onProgress, taskName) {
+    onProgress({ type: 'status', message: 'Starting task...' });
+
+    // Step 1: Navigate to the task page
     if (taskUrl) {
+      onProgress({ type: 'status', message: `Navigating to task...` });
       await this.page.goto(taskUrl, { waitUntil: 'networkidle' });
     }
-
-    onProgress({ type: 'status', message: 'Starting task...' });
     await delay(2000);
 
-    const tabs = await this.page.evaluate(() => {
-      const found = [];
-      const allEls = document.querySelectorAll('a, button, div, span, [role="tab"]');
-      allEls.forEach(el => {
-        const text = el.textContent?.trim();
-        if (text && /^\d+[A-Z]$/i.test(text) && el.offsetParent !== null) {
-          if (!found.includes(text.toUpperCase())) {
-            found.push(text.toUpperCase());
+    // Step 2: Verify we're on a question page, not still on homework list
+    let url = this.page.url();
+    onProgress({ type: 'status', message: `On: ${url.substring(0, 80)}` });
+
+    if (!url.includes('/package/') && !url.includes('/task/')) {
+      onProgress({ type: 'status', message: 'Not on question page — clicking through...' });
+
+      // Try clicking a homework link that goes to a package
+      const navResult = await this.page.evaluate((name) => {
+        // First try: links with package/task in href
+        const packageLinks = document.querySelectorAll('a[href*="package"], a[href*="task"]');
+        for (const link of packageLinks) {
+          const text = link.textContent || '';
+          if (!/completed/i.test(text)) {
+            link.click();
+            return 'clicked-package-link';
           }
         }
-      });
-      found.sort((a, b) => {
-        const numA = parseInt(a), numB = parseInt(b);
-        if (numA !== numB) return numA - numB;
-        return a.localeCompare(b);
-      });
-      return found;
-    });
+        if (packageLinks.length > 0) {
+          packageLinks[0].click();
+          return 'clicked-first-package-link';
+        }
 
+        // Second try: click by task name
+        if (name) {
+          const allEls = document.querySelectorAll('a, button, [role="button"], [role="link"]');
+          for (const el of allEls) {
+            if (el.textContent?.includes(name.substring(0, 20))) {
+              el.click();
+              return 'clicked-by-name';
+            }
+          }
+        }
+
+        // Third try: any clickable homework element
+        const hwElements = document.querySelectorAll('a, button, [role="button"]');
+        for (const el of hwElements) {
+          const text = el.textContent || '';
+          if (/homework due/i.test(text) && !/completed/i.test(text)) {
+            el.click();
+            return 'clicked-homework-element';
+          }
+        }
+
+        return 'nothing-to-click';
+      }, taskName);
+
+      onProgress({ type: 'status', message: `Navigation: ${navResult}` });
+
+      if (navResult !== 'nothing-to-click') {
+        try {
+          await this.page.waitForURL(u => u.href.includes('/package/') || u.href.includes('/task/'), { timeout: 15000 });
+        } catch {
+          // URL didn't change, but page content might have
+        }
+        await this.page.waitForLoadState('networkidle');
+        await delay(2000);
+      }
+
+      url = this.page.url();
+      onProgress({ type: 'status', message: `Now on: ${url.substring(0, 80)}` });
+    }
+
+    // Step 3: Dismiss cookie banner on the question page
+    await this.dismissCookieBanner();
+    await delay(1000);
+
+    // Step 4: Check if there's a "Start" or "Continue" button to begin
+    const startBtn = await this.page.$('button:has-text("Start"), button:has-text("Continue"), button:has-text("Resume")');
+    if (startBtn) {
+      onProgress({ type: 'status', message: 'Clicking Start/Continue...' });
+      await startBtn.click();
+      await delay(2000);
+      await this.page.waitForLoadState('networkidle');
+    }
+
+    // Step 5: Detect sub-question tabs
+    const tabs = await this.detectTabs();
     const questionsToSolve = tabs.length > 0 ? tabs : ['single'];
-    onProgress({ type: 'status', message: `Found ${questionsToSolve.length} sub-questions: ${tabs.join(', ') || 'unknown'}` });
+    onProgress({ type: 'status', message: `Found ${questionsToSolve.length} sub-questions: ${tabs.join(', ') || 'single task'}` });
+
+    // Step 6: Debug — log what the page shows
+    const pagePreview = await this.page.evaluate(() => {
+      const text = document.body.innerText || '';
+      return text.substring(0, 300).replace(/\s+/g, ' ');
+    });
+    onProgress({ type: 'status', message: `Page text: ${pagePreview.substring(0, 150)}` });
 
     let solved = 0;
     let failed = 0;
@@ -260,18 +335,9 @@ export class SparxBot {
       const tabLabel = questionsToSolve[i];
       const questionNum = i + 1;
 
+      // Click the tab if not 'single'
       if (tabLabel !== 'single') {
-        const clicked = await this.page.evaluate((label) => {
-          const els = document.querySelectorAll('a, button, div, span, [role="tab"]');
-          for (const el of els) {
-            if (el.textContent?.trim().toUpperCase() === label && el.offsetParent !== null) {
-              el.click();
-              return true;
-            }
-          }
-          return false;
-        }, tabLabel);
-
+        const clicked = await this.clickTab(tabLabel);
         if (!clicked) {
           onProgress({ type: 'skip', message: `Could not find tab ${tabLabel}`, questionNum });
           failed++;
@@ -284,8 +350,14 @@ export class SparxBot {
 
       try {
         const questionData = await this.extractQuestion();
-        const qPreview = questionData.text?.substring(0, 100) || 'Reading question...';
+        const qPreview = questionData.text?.substring(0, 100) || 'No question text found';
         onProgress({ type: 'question', message: `${tabLabel}: ${qPreview}`, questionNum });
+
+        if (!questionData.text || questionData.text.length < 5) {
+          onProgress({ type: 'skip', message: `${tabLabel}: No question text detected`, questionNum });
+          failed++;
+          continue;
+        }
 
         const answer = await extractAnswer(this.page, questionData);
 
@@ -306,6 +378,113 @@ export class SparxBot {
     }
 
     onProgress({ type: 'complete', message: `Done! Solved ${solved}/${questionsToSolve.length}`, solved, failed });
+  }
+
+  async detectTabs() {
+    return await this.page.evaluate(() => {
+      const found = [];
+      const seen = new Set();
+
+      // Strategy 1: Look for elements whose DIRECT text (not children) matches tab pattern
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+      while (walker.nextNode()) {
+        const el = walker.currentNode;
+        const directText = Array.from(el.childNodes)
+          .filter(n => n.nodeType === Node.TEXT_NODE)
+          .map(n => n.textContent.trim())
+          .join('');
+        const fullText = el.textContent?.trim() || '';
+
+        // Match "1A", "1B" etc — either as direct text or full text if element is small
+        const textToCheck = directText || (fullText.length <= 3 ? fullText : '');
+        if (textToCheck && /^\d+[A-Z]$/i.test(textToCheck) && el.offsetParent !== null) {
+          const label = textToCheck.toUpperCase();
+          if (!seen.has(label)) {
+            seen.add(label);
+            found.push(label);
+          }
+        }
+      }
+
+      // Strategy 2: Check for aria tabs
+      if (found.length === 0) {
+        document.querySelectorAll('[role="tab"]').forEach(el => {
+          const text = el.textContent?.trim();
+          if (text && /^\d+[A-Z]$/i.test(text)) {
+            const label = text.toUpperCase();
+            if (!seen.has(label)) {
+              seen.add(label);
+              found.push(label);
+            }
+          }
+        });
+      }
+
+      // Strategy 3: Look for navigation-like containers with short labels
+      if (found.length === 0) {
+        document.querySelectorAll('nav, [class*="tab"], [class*="nav"], [class*="step"]').forEach(container => {
+          container.querySelectorAll('a, button, div, span').forEach(el => {
+            const text = el.textContent?.trim();
+            if (text && /^\d+[A-Z]$/i.test(text) && el.offsetParent !== null) {
+              const label = text.toUpperCase();
+              if (!seen.has(label)) {
+                seen.add(label);
+                found.push(label);
+              }
+            }
+          });
+        });
+      }
+
+      found.sort((a, b) => {
+        const numA = parseInt(a), numB = parseInt(b);
+        if (numA !== numB) return numA - numB;
+        return a.localeCompare(b);
+      });
+
+      return found;
+    });
+  }
+
+  async clickTab(tabLabel) {
+    return await this.page.evaluate((label) => {
+      // Try multiple strategies to find and click the tab
+
+      // Strategy 1: Direct text match on interactive elements
+      const interactive = document.querySelectorAll('a, button, [role="tab"]');
+      for (const el of interactive) {
+        if (el.textContent?.trim().toUpperCase() === label && el.offsetParent !== null) {
+          el.click();
+          return true;
+        }
+      }
+
+      // Strategy 2: Any visible element with matching text
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+      while (walker.nextNode()) {
+        const el = walker.currentNode;
+        const directText = Array.from(el.childNodes)
+          .filter(n => n.nodeType === Node.TEXT_NODE)
+          .map(n => n.textContent.trim())
+          .join('');
+        if (directText.toUpperCase() === label && el.offsetParent !== null) {
+          el.click();
+          return true;
+        }
+      }
+
+      // Strategy 3: Element whose full text matches (for small elements)
+      const allEls = document.querySelectorAll('div, span, li, a, button');
+      for (const el of allEls) {
+        const text = el.textContent?.trim();
+        if (text && text.toUpperCase() === label && text.length <= 3 && el.offsetParent !== null) {
+          el.click();
+          return true;
+        }
+      }
+
+      return false;
+    }, tabLabel);
   }
 
   async extractQuestion() {
@@ -336,45 +515,49 @@ export class SparxBot {
         return result;
       }
 
+      // Noise: lines that are UI chrome, not question content
+      const isNoise = (line) => {
+        if (!line || line.length === 0) return true;
+        if (/^\d+[A-Za-z]$/.test(line)) return true;
+        if (/^\d+[A-Za-z]\d+[A-Za-z]/.test(line)) return true;
+        if (/^(Summary|Menu|Bookwork)$/i.test(line)) return true;
+        if (/^\d[\d,]*\s*XP/i.test(line)) return true;
+        if (/^Hey\s+\w+/i.test(line)) return true;
+        if (/^Sparx\s*(Maths|Science|Reader)?$/i.test(line)) return true;
+        if (/^Calculator\s*(not\s*)?allowed/i.test(line)) return true;
+        if (/^Watch\s+video/i.test(line)) return true;
+        if (/^(Submit|Check|Skip|Next|Back|I don't know)/i.test(line)) return true;
+        if (/personalised\s+homework/i.test(line)) return true;
+        if (/answer\s+every\s+question/i.test(line)) return true;
+        if (/complete\s+it.*\d+\/\d+/i.test(line)) return true;
+        if (/^Homework\s+due/i.test(line)) return true;
+        if (/^(Completed|Not started|In progress)$/i.test(line)) return true;
+        if (/^\d+\/\d+$/.test(line)) return true;
+        if (/^(XP|Bookwork code)/i.test(line)) return true;
+        // Single/two word lines that aren't math
+        if (line.length <= 3 && !/\d/.test(line)) return true;
+        return false;
+      };
+
       const bodyText = document.body.innerText || '';
-
-      const skipPatterns = [
-        /^\d+[A-Za-z]$/,
-        /^(Summary|Menu|XP|Bookwork|Calculator .*)$/i,
-        /^\d[\d,]*\s*XP/,
-        /^Hey\s+\w+/i,
-        /^\w+\s+\w+$/,
-        /personalised homework/i,
-        /answer every question/i,
-        /complete it/i,
-        /^Sparx/i,
-        /^Watch video/i,
-        /not allowed/i,
-        /^\d+\/\d+$/,
-      ];
-
       const lines = bodyText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
+      // Collect all non-noise lines
       const questionLines = [];
-      let foundQuestion = false;
-
       for (const line of lines) {
-        if (skipPatterns.some(p => p.test(line))) continue;
-        if (/^\d+[A-Za-z]\d+[A-Za-z]/.test(line)) continue;
-        if (/^(Submit|Check|Skip|Next|Back|I don't know|Watch video)/i.test(line)) break;
-
-        if (line.length > 15 || foundQuestion) {
-          foundQuestion = true;
-          questionLines.push(line);
-        }
+        if (isNoise(line)) continue;
+        // Stop at button-like lines at the end
+        if (/^(Submit|Check answer)/i.test(line)) break;
+        questionLines.push(line);
       }
 
       let text = questionLines.join(' ').replace(/\s+/g, ' ').trim();
 
+      // Fallback: try specific DOM selectors
       if (!text || text.length < 10) {
         const selectors = [
-          '[class*="question"]', '[class*="problem"]', '[class*="stimulus"]',
-          '[class*="prompt"]',
+          '[class*="question"]', '[class*="stimulus"]', '[class*="prompt"]',
+          '[class*="problem"]', '[class*="wac-text"]',
         ];
         for (const sel of selectors) {
           const el = document.querySelector(sel);
@@ -385,6 +568,7 @@ export class SparxBot {
         }
       }
 
+      // Last resort: grab text from main content area
       if (!text || text.length < 10) {
         const main = document.querySelector('main') || document.querySelector('[class*="content"]');
         if (main) {

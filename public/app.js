@@ -204,7 +204,7 @@ async function startSolving(task) {
     const res = await fetch(`/api/solve/${sessionId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskUrl: task.url }),
+      body: JSON.stringify({ taskUrl: task.url, taskName: task.name }),
     });
 
     const reader = res.body.getReader();

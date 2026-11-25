@@ -96,7 +96,7 @@ app.post('/api/solve/:sessionId', async (req, res) => {
   const bot = activeSessions.get(req.params.sessionId);
   if (!bot) return res.status(404).json({ error: 'Session not found' });
 
-  const { taskUrl } = req.body;
+  const { taskUrl, taskName } = req.body;
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -109,7 +109,7 @@ app.post('/api/solve/:sessionId', async (req, res) => {
   };
 
   try {
-    await bot.solveTask(taskUrl, sendEvent);
+    await bot.solveTask(taskUrl, sendEvent, taskName);
     sendEvent({ type: 'complete', message: 'Task completed!' });
   } catch (err) {
     sendEvent({ type: 'error', message: err.message });
