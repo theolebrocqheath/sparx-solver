@@ -140,47 +140,73 @@ export class SparxBot {
     else if (url.includes('reader')) this.module = 'reader';
     else this.module = 'maths';
 
-    const studentName = await this.page
-      .locator('[class*="student-name"], [class*="user-name"], [data-testid*="name"]')
-      .first()
-      .textContent({ timeout: 5000 })
-      .catch(() => fallbackName);
+    const studentName = await this.page.evaluate(() => {
+      const heyMatch = document.body.innerText.match(/Hey\s+([A-Za-z]+)/);
+      if (heyMatch) return heyMatch[1];
+      const selectors = [
+        '[class*="student-name"]', '[class*="user-name"]', '[data-testid*="name"]',
+        '[class*="greeting"]', '[class*="welcome"]',
+      ];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el?.textContent?.trim()) return el.textContent.trim();
+      }
+      return null;
+    }).catch(() => null);
 
-    return { studentName: studentName?.trim() || fallbackName, module: this.module };
+    return { studentName: studentName || fallbackName, module: this.module };
   }
 
   async getHomework() {
-    const homeworkLink = await this.page.waitForSelector(
-      'a[href*="homework"], a:has-text("Homework"), [data-testid*="homework"], nav a:has-text("My Homework")',
-      { timeout: 10000 }
-    );
-    await homeworkLink.click();
-    await this.page.waitForLoadState('networkidle');
+    const alreadyOnHomework = this.page.url().includes('homework');
+    if (!alreadyOnHomework) {
+      const homeworkLink = await this.page.waitForSelector(
+        'a[href*="homework"], a:has-text("Homework"), [data-testid*="homework"]',
+        { timeout: 10000 }
+      ).catch(() => null);
+      if (homeworkLink) {
+        await homeworkLink.click();
+        await this.page.waitForLoadState('networkidle');
+      }
+    }
     await delay(2000);
 
     const homework = await this.page.evaluate(() => {
       const tasks = [];
-      const taskElements = document.querySelectorAll(
-        '[class*="task"], [class*="homework-item"], [class*="package"], [data-testid*="task"]'
-      );
-      taskElements.forEach((el) => {
-        const name =
-          el.querySelector('[class*="title"], [class*="name"], h3, h4')?.textContent?.trim() ||
-          'Unknown Task';
-        const status =
-          el.querySelector('[class*="status"], [class*="progress"], [class*="badge"]')
-            ?.textContent?.trim() || '';
-        const link = el.querySelector('a')?.href || el.closest('a')?.href || '';
-        const questions =
-          el.querySelector('[class*="question"], [class*="count"]')?.textContent?.trim() || '';
-        tasks.push({ name, status, questions, url: link });
+
+      // Look for clickable elements containing "Homework due" or package links
+      const allElements = document.querySelectorAll('a, button, [role="button"], [class*="package"], [class*="task"], [class*="homework"]');
+      allElements.forEach((el) => {
+        const text = el.textContent?.trim() || '';
+        if (text.includes('Homework due') || text.includes('homework due')) {
+          tasks.push({
+            name: text.split('\n')[0].trim(),
+            status: '',
+            questions: '',
+            url: el.href || el.closest('a')?.href || '',
+          });
+        }
       });
 
+      // Also check for expandable sections that contain homework
       if (tasks.length === 0) {
-        document.querySelectorAll('a[href*="task"], a[href*="package"]').forEach((a) => {
-          tasks.push({ name: a.textContent?.trim() || 'Task', status: '', questions: '', url: a.href });
+        document.querySelectorAll('[class*="package"], [class*="task"], [class*="accordion"], [class*="collapsible"]').forEach((el) => {
+          const text = el.textContent?.trim() || '';
+          if (text && text.length < 200) {
+            const link = el.querySelector('a')?.href || el.closest('a')?.href || '';
+            tasks.push({ name: text.split('\n')[0].trim(), status: '', questions: '', url: link });
+          }
         });
       }
+
+      // Fallback: grab any links with homework/task/package in the URL
+      if (tasks.length === 0) {
+        document.querySelectorAll('a[href*="task"], a[href*="package"], a[href*="homework"]').forEach((a) => {
+          const text = a.textContent?.trim();
+          if (text) tasks.push({ name: text, status: '', questions: '', url: a.href });
+        });
+      }
+
       return tasks;
     });
 
