@@ -231,84 +231,71 @@ export class SparxBot {
     onProgress({ type: 'status', message: 'Starting task...' });
     await delay(2000);
 
-    let questionNum = 0;
+    const tabs = await this.page.evaluate(() => {
+      const tabEls = document.querySelectorAll('a, button');
+      const found = [];
+      tabEls.forEach(el => {
+        const text = el.textContent?.trim();
+        if (text && /^\d+[A-Za-z]$/.test(text)) {
+          found.push(text);
+        }
+      });
+      return found;
+    });
+
+    const questionsToSolve = tabs.length > 0 ? tabs : ['single'];
+    onProgress({ type: 'status', message: `Found ${questionsToSolve.length} sub-questions: ${tabs.join(', ') || 'unknown'}` });
+
     let solved = 0;
     let failed = 0;
 
-    while (true) {
-      questionNum++;
-      onProgress({ type: 'progress', message: `Working on question ${questionNum}...`, questionNum, solved, failed });
+    for (let i = 0; i < questionsToSolve.length; i++) {
+      const tabLabel = questionsToSolve[i];
+      const questionNum = i + 1;
 
-      const isComplete = await this.page.evaluate(() => {
-        const url = window.location.href;
-        if (url.includes('summary') || url.includes('complete') || url.includes('results')) return true;
+      if (tabLabel !== 'single') {
+        const clicked = await this.page.evaluate((label) => {
+          const els = document.querySelectorAll('a, button');
+          for (const el of els) {
+            if (el.textContent?.trim() === label) { el.click(); return true; }
+          }
+          return false;
+        }, tabLabel);
 
-        const main = document.querySelector('main') || document.querySelector('[class*="content"]');
-        if (!main) return false;
-        const mainText = main.innerText.toLowerCase();
-
-        const hasCompletionMessage =
-          mainText.includes('well done') ||
-          mainText.includes('all caught up') ||
-          mainText.includes('you have completed') ||
-          mainText.includes('task complete') ||
-          mainText.includes('all tasks complete');
-
-        const hasNoQuestions =
-          !document.querySelector('input:not([type="hidden"])') &&
-          !document.querySelector('[class*="choice"], [class*="option"]') &&
-          !document.querySelector('[class*="question"]');
-
-        return hasCompletionMessage && hasNoQuestions;
-      });
-
-      if (isComplete) {
-        onProgress({ type: 'status', message: 'Task complete!', solved, failed });
-        break;
+        if (!clicked) {
+          onProgress({ type: 'skip', message: `Could not find tab ${tabLabel}`, questionNum });
+          failed++;
+          continue;
+        }
+        await delay(1500);
       }
+
+      onProgress({ type: 'progress', message: `Working on ${tabLabel}...`, questionNum, solved, failed });
 
       try {
         const questionData = await this.extractQuestion();
-        onProgress({ type: 'question', message: `Q${questionNum}: ${questionData.text?.substring(0, 80) || 'Reading question...'}`, questionNum });
+        const qPreview = questionData.text?.substring(0, 100) || 'Reading question...';
+        onProgress({ type: 'question', message: `${tabLabel}: ${qPreview}`, questionNum });
 
         const answer = await extractAnswer(this.page, questionData);
 
         if (answer) {
-          onProgress({ type: 'answering', message: `Q${questionNum} → ${answer.value || 'clicking option'}`, questionNum });
+          onProgress({ type: 'answering', message: `${tabLabel} → ${answer.value || 'clicking option'}`, questionNum });
           await this.submitAnswer(answer);
           solved++;
         } else {
-          onProgress({ type: 'skip', message: `Could not extract answer for Q${questionNum}, skipping`, questionNum });
+          onProgress({ type: 'skip', message: `Could not solve ${tabLabel}, skipping`, questionNum });
           failed++;
-          await this.skipQuestion();
         }
       } catch (err) {
-        onProgress({ type: 'error', message: `Error on Q${questionNum}: ${err.message}`, questionNum });
+        onProgress({ type: 'error', message: `Error on ${tabLabel}: ${err.message}`, questionNum });
         failed++;
-        await this.skipQuestion();
       }
 
       await humanDelay();
-
-      const hasContent = await this.page.evaluate(() => {
-        return !!(
-          document.querySelector('input:not([type="hidden"])') ||
-          document.querySelector('[class*="choice"], [class*="option"]') ||
-          document.querySelector('[class*="question"]') ||
-          document.querySelector('[class*="stimulus"]')
-        );
-      });
-
-      if (!hasContent && questionNum > 2) {
-        onProgress({ type: 'status', message: 'No more questions detected', solved, failed });
-        break;
-      }
-
-      if (questionNum > 50) {
-        onProgress({ type: 'status', message: 'Safety limit reached (50 questions)', solved, failed });
-        break;
-      }
     }
+
+    onProgress({ type: 'complete', message: `Done! Solved ${solved}/${questionsToSolve.length}`, solved, failed });
   }
 
   async extractQuestion() {
@@ -339,20 +326,61 @@ export class SparxBot {
         return result;
       }
 
-      const mainContent = document.querySelector('main') || document.querySelector('[class*="content"]') || document.body;
-      let text = readMathText(mainContent).replace(/\s+/g, ' ').trim();
+      const bodyText = document.body.innerText || '';
 
-      if (!text || text.length < 5) {
+      const noisePatterns = [
+        /^\d+[A-Za-z]$/,
+        /^(Summary|Menu|XP|Bookwork|Calculator .*)$/i,
+        /^\d[\d,]*\s*XP/,
+        /^Hey\s+\w+/i,
+        /^\w+\s+\w+$/,
+      ];
+
+      const lines = bodyText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+      let questionStart = -1;
+      let questionEnd = lines.length;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (noisePatterns.some(p => p.test(line))) continue;
+        if (/^\d+[A-Za-z]\d+[A-Za-z]/.test(line)) continue;
+        if (line.length > 15 && !line.match(/^(Submit|Check|Skip|Next|Back|Menu)/i)) {
+          questionStart = i;
+          break;
+        }
+      }
+
+      for (let i = lines.length - 1; i > questionStart; i--) {
+        const line = lines[i];
+        if (/^(Submit|Check|Skip|Next|Back|I don't know)/i.test(line)) {
+          questionEnd = i;
+        }
+      }
+
+      let text = '';
+      if (questionStart >= 0) {
+        text = lines.slice(questionStart, questionEnd).join(' ').replace(/\s+/g, ' ').trim();
+      }
+
+      if (!text || text.length < 10) {
         const selectors = [
           '[class*="question"]', '[class*="problem"]', '[class*="stimulus"]',
-          '[class*="prompt"]', 'main p', 'main div',
+          '[class*="prompt"]',
         ];
         for (const sel of selectors) {
           const el = document.querySelector(sel);
-          if (el?.textContent?.trim().length > 5) {
+          if (el?.textContent?.trim().length > 10) {
             text = readMathText(el).replace(/\s+/g, ' ').trim();
             break;
           }
+        }
+      }
+
+      if (!text || text.length < 10) {
+        const main = document.querySelector('main') || document.querySelector('[class*="content"]');
+        if (main) {
+          text = readMathText(main).replace(/\s+/g, ' ').trim();
         }
       }
 

@@ -94,6 +94,28 @@ function solveQuestion(text) {
   m = t.match(/round\s+(\d+(?:\.\d+)?)\s+to\s+the\s+nearest\s+(\d+)/i);
   if (m) { const n = parseFloat(m[1]), r = parseInt(m[2]); return String(Math.round(n / r) * r); }
 
+  // "0.45 as a fraction" or "write 0.45 as a fraction in its simplest form"
+  m = t.match(/(\d+\.\d+)\s+(?:as\s+a\s+fraction|in\s+(?:its\s+)?simplest\s+form)/i);
+  if (m) {
+    const dec = m[1];
+    const places = dec.split('.')[1].length;
+    const denom = Math.pow(10, places);
+    const numer = Math.round(parseFloat(dec) * denom);
+    const f = simplifyFraction(numer, denom);
+    return `${f[0]}/${f[1]}`;
+  }
+
+  // "convert 0.X to a fraction"
+  m = t.match(/convert\s+(\d+\.\d+)\s+to\s+a\s+fraction/i);
+  if (m) {
+    const dec = m[1];
+    const places = dec.split('.')[1].length;
+    const denom = Math.pow(10, places);
+    const numer = Math.round(parseFloat(dec) * denom);
+    const f = simplifyFraction(numer, denom);
+    return `${f[0]}/${f[1]}`;
+  }
+
   return null;
 }
 
