@@ -232,13 +232,20 @@ export class SparxBot {
     await delay(2000);
 
     const tabs = await this.page.evaluate(() => {
-      const tabEls = document.querySelectorAll('a, button');
       const found = [];
-      tabEls.forEach(el => {
+      const allEls = document.querySelectorAll('a, button, div, span, [role="tab"]');
+      allEls.forEach(el => {
         const text = el.textContent?.trim();
-        if (text && /^\d+[A-Za-z]$/.test(text)) {
-          found.push(text);
+        if (text && /^\d+[A-Z]$/i.test(text) && el.offsetParent !== null) {
+          if (!found.includes(text.toUpperCase())) {
+            found.push(text.toUpperCase());
+          }
         }
+      });
+      found.sort((a, b) => {
+        const numA = parseInt(a), numB = parseInt(b);
+        if (numA !== numB) return numA - numB;
+        return a.localeCompare(b);
       });
       return found;
     });
@@ -255,9 +262,12 @@ export class SparxBot {
 
       if (tabLabel !== 'single') {
         const clicked = await this.page.evaluate((label) => {
-          const els = document.querySelectorAll('a, button');
+          const els = document.querySelectorAll('a, button, div, span, [role="tab"]');
           for (const el of els) {
-            if (el.textContent?.trim() === label) { el.click(); return true; }
+            if (el.textContent?.trim().toUpperCase() === label && el.offsetParent !== null) {
+              el.click();
+              return true;
+            }
           }
           return false;
         }, tabLabel);
@@ -328,40 +338,38 @@ export class SparxBot {
 
       const bodyText = document.body.innerText || '';
 
-      const noisePatterns = [
+      const skipPatterns = [
         /^\d+[A-Za-z]$/,
         /^(Summary|Menu|XP|Bookwork|Calculator .*)$/i,
         /^\d[\d,]*\s*XP/,
         /^Hey\s+\w+/i,
         /^\w+\s+\w+$/,
+        /personalised homework/i,
+        /answer every question/i,
+        /complete it/i,
+        /^Sparx/i,
+        /^Watch video/i,
+        /not allowed/i,
+        /^\d+\/\d+$/,
       ];
 
       const lines = bodyText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
-      let questionStart = -1;
-      let questionEnd = lines.length;
+      const questionLines = [];
+      let foundQuestion = false;
 
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (noisePatterns.some(p => p.test(line))) continue;
+      for (const line of lines) {
+        if (skipPatterns.some(p => p.test(line))) continue;
         if (/^\d+[A-Za-z]\d+[A-Za-z]/.test(line)) continue;
-        if (line.length > 15 && !line.match(/^(Submit|Check|Skip|Next|Back|Menu)/i)) {
-          questionStart = i;
-          break;
+        if (/^(Submit|Check|Skip|Next|Back|I don't know|Watch video)/i.test(line)) break;
+
+        if (line.length > 15 || foundQuestion) {
+          foundQuestion = true;
+          questionLines.push(line);
         }
       }
 
-      for (let i = lines.length - 1; i > questionStart; i--) {
-        const line = lines[i];
-        if (/^(Submit|Check|Skip|Next|Back|I don't know)/i.test(line)) {
-          questionEnd = i;
-        }
-      }
-
-      let text = '';
-      if (questionStart >= 0) {
-        text = lines.slice(questionStart, questionEnd).join(' ').replace(/\s+/g, ' ').trim();
-      }
+      let text = questionLines.join(' ').replace(/\s+/g, ' ').trim();
 
       if (!text || text.length < 10) {
         const selectors = [
