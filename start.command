@@ -39,6 +39,9 @@ if [ -z "$CHROMIUM_PATH" ] || [ ! -f "$CHROMIUM_PATH" ]; then
   echo "  ✓ Browser ready"
 fi
 
+# Kill any existing process on port 3000
+lsof -ti :3000 | xargs kill -9 2>/dev/null
+
 echo ""
 echo "  Starting server..."
 echo "  (Close this window to stop)"
