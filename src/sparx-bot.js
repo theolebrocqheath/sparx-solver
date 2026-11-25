@@ -1,9 +1,7 @@
 import { chromium } from 'playwright';
 import { extractAnswer } from './answer-extractor.js';
 
-const SPARX_MATHS_URL = 'https://www.sparxmaths.uk';
-const SPARX_SCIENCE_URL = 'https://www.sparxscience.com';
-const SPARX_READER_URL = 'https://www.sparxreader.com';
+const SELECT_SCHOOL_URL = 'https://selectschool.sparx-learning.com/?app=sparx_learning&route=https%3A%2F%2Fmaths.sparx-learning.com%2F';
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const humanDelay = () => delay(1500 + Math.random() * 3000);
@@ -15,14 +13,12 @@ export class SparxBot {
     this.module = 'maths';
   }
 
-  async launch() {
+  async launchBrowser(headless = true) {
     try {
-      this.browser = await chromium.launch({ headless: true });
+      this.browser = await chromium.launch({ headless });
     } catch (err) {
-      if (err.message.includes('Executable doesn\'t exist') || err.message.includes('browserType.launch')) {
-        throw new Error(
-          'Browser not installed yet. Run: npx playwright install chromium'
-        );
+      if (err.message.includes("Executable doesn't exist") || err.message.includes('browserType.launch')) {
+        throw new Error('Browser not installed yet. Run: npx playwright install chromium');
       }
       throw err;
     }
@@ -34,76 +30,101 @@ export class SparxBot {
     this.page = await context.newPage();
   }
 
-  async login(school, username, password) {
-    await this.launch();
+  async selectSchool(schoolSlug) {
+    await this.page.goto(SELECT_SCHOOL_URL, { waitUntil: 'networkidle' });
 
-    await this.page.goto(SPARX_MATHS_URL, { waitUntil: 'networkidle' });
-
-    // Sparx login: find school, then enter credentials
-    // The login flow: select school → enter username/password → submit
-    const schoolInput = await this.page.waitForSelector(
-      'input[placeholder*="school" i], input[name*="school" i], input[aria-label*="school" i]',
+    const input = await this.page.waitForSelector(
+      'input[placeholder*="school" i]',
       { timeout: 15000 }
     );
-    await schoolInput.fill(school);
-    await delay(1000);
-
-    // Wait for school dropdown and click first match
-    const schoolOption = await this.page.waitForSelector(
-      '[role="option"], .school-option, .dropdown-item, li[data-value]',
-      { timeout: 10000 }
-    );
-    await schoolOption.click();
+    await input.type(schoolSlug, { delay: 50 });
     await delay(1500);
 
-    // Enter username
+    const option = await this.page.waitForSelector(
+      '[class*="result"], [class*="option"], [class*="school-item"], li',
+      { timeout: 10000 }
+    ).catch(() => null);
+
+    if (option) {
+      await option.click();
+      await delay(500);
+    }
+
+    const continueBtn = await this.page.waitForSelector(
+      'button:has-text("Continue")',
+      { timeout: 5000 }
+    );
+    await continueBtn.click();
+
+    await this.page.waitForURL('**/auth.sparx-learning.com/**', { timeout: 15000 });
+    await this.page.waitForLoadState('networkidle');
+  }
+
+  async login(schoolSlug, username, password) {
+    await this.launchBrowser(true);
+    await this.selectSchool(schoolSlug);
+
     const usernameInput = await this.page.waitForSelector(
-      'input[name*="user" i], input[placeholder*="user" i], input[type="text"]:not([name*="school" i])',
+      'input[name="username"], input[placeholder*="user" i], input[type="text"]',
       { timeout: 10000 }
     );
     await usernameInput.fill(username);
-    await delay(500);
+    await delay(300);
 
-    // Enter password
     const passwordInput = await this.page.waitForSelector(
-      'input[type="password"], input[name*="pass" i]',
+      'input[type="password"], input[name="password"]',
       { timeout: 10000 }
     );
     await passwordInput.fill(password);
-    await delay(500);
+    await delay(300);
 
-    // Submit
-    const submitBtn = await this.page.waitForSelector(
+    const loginBtn = await this.page.waitForSelector(
       'button[type="submit"], button:has-text("Log in"), button:has-text("Sign in")',
       { timeout: 5000 }
     );
-    await submitBtn.click();
+    await loginBtn.click();
 
-    // Wait for navigation to dashboard
-    await this.page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 });
+    await this.page.waitForURL('**/maths.sparx-learning.com/**', { timeout: 30000 });
+    await this.page.waitForLoadState('networkidle');
 
-    // Check if login succeeded by looking for homework or dashboard elements
+    return this.getStudentInfo(username);
+  }
+
+  async loginWithGoogle(schoolSlug) {
+    // Open a VISIBLE browser so the user can complete Google sign-in
+    await this.launchBrowser(false);
+    await this.selectSchool(schoolSlug);
+
+    const googleBtn = await this.page.waitForSelector(
+      'button:has-text("Google"), a:has-text("Google")',
+      { timeout: 10000 }
+    );
+    await googleBtn.click();
+
+    // Wait for the user to complete Google OAuth and land on the Sparx dashboard
+    // This may take a while as the user manually signs into Google
+    await this.page.waitForURL('**/maths.sparx-learning.com/**', { timeout: 300000 });
+    await this.page.waitForLoadState('networkidle');
+
+    return this.getStudentInfo('Student');
+  }
+
+  async getStudentInfo(fallbackName) {
     const url = this.page.url();
-    if (url.includes('login') || url.includes('error')) {
-      throw new Error('Login failed — check your school name, username and password');
-    }
-
-    // Detect which module we're on
-    if (url.includes('sparxscience')) this.module = 'science';
-    else if (url.includes('sparxreader')) this.module = 'reader';
+    if (url.includes('science')) this.module = 'science';
+    else if (url.includes('reader')) this.module = 'reader';
     else this.module = 'maths';
 
     const studentName = await this.page
       .locator('[class*="student-name"], [class*="user-name"], [data-testid*="name"]')
       .first()
-      .textContent()
-      .catch(() => username);
+      .textContent({ timeout: 5000 })
+      .catch(() => fallbackName);
 
-    return { studentName: studentName?.trim() || username, module: this.module };
+    return { studentName: studentName?.trim() || fallbackName, module: this.module };
   }
 
   async getHomework() {
-    // Navigate to homework page
     const homeworkLink = await this.page.waitForSelector(
       'a[href*="homework"], a:has-text("Homework"), [data-testid*="homework"], nav a:has-text("My Homework")',
       { timeout: 10000 }
@@ -112,10 +133,8 @@ export class SparxBot {
     await this.page.waitForLoadState('networkidle');
     await delay(2000);
 
-    // Extract homework tasks from the page
     const homework = await this.page.evaluate(() => {
       const tasks = [];
-      // Look for homework task cards/items
       const taskElements = document.querySelectorAll(
         '[class*="task"], [class*="homework-item"], [class*="package"], [data-testid*="task"]'
       );
@@ -129,22 +148,14 @@ export class SparxBot {
         const link = el.querySelector('a')?.href || el.closest('a')?.href || '';
         const questions =
           el.querySelector('[class*="question"], [class*="count"]')?.textContent?.trim() || '';
-
         tasks.push({ name, status, questions, url: link });
       });
 
-      // Fallback: look for any clickable homework-related elements
       if (tasks.length === 0) {
         document.querySelectorAll('a[href*="task"], a[href*="package"]').forEach((a) => {
-          tasks.push({
-            name: a.textContent?.trim() || 'Task',
-            status: '',
-            questions: '',
-            url: a.href,
-          });
+          tasks.push({ name: a.textContent?.trim() || 'Task', status: '', questions: '', url: a.href });
         });
       }
-
       return tasks;
     });
 
@@ -163,18 +174,10 @@ export class SparxBot {
     let solved = 0;
     let failed = 0;
 
-    // Loop through questions until done
     while (true) {
       questionNum++;
-      onProgress({
-        type: 'progress',
-        message: `Working on question ${questionNum}...`,
-        questionNum,
-        solved,
-        failed,
-      });
+      onProgress({ type: 'progress', message: `Working on question ${questionNum}...`, questionNum, solved, failed });
 
-      // Check if the task is complete
       const isComplete = await this.page.evaluate(() => {
         const body = document.body.innerText.toLowerCase();
         return (
@@ -182,8 +185,7 @@ export class SparxBot {
           body.includes('all caught up') ||
           body.includes('completed') ||
           body.includes('100%') ||
-          document.querySelector('[class*="complete"], [class*="finished"], [class*="done"]') !==
-            null
+          document.querySelector('[class*="complete"], [class*="finished"], [class*="done"]') !== null
         );
       });
 
@@ -192,52 +194,31 @@ export class SparxBot {
         break;
       }
 
-      // Try to extract and answer the current question
       try {
         const questionData = await this.extractQuestion();
-        onProgress({
-          type: 'question',
-          message: `Q${questionNum}: ${questionData.text?.substring(0, 80) || 'Reading question...'}`,
-          questionNum,
-        });
+        onProgress({ type: 'question', message: `Q${questionNum}: ${questionData.text?.substring(0, 80) || 'Reading question...'}`, questionNum });
 
-        // Try to get the answer from page data first
         const answer = await extractAnswer(this.page, questionData);
 
         if (answer) {
-          onProgress({
-            type: 'answering',
-            message: `Found answer for Q${questionNum}`,
-            questionNum,
-          });
+          onProgress({ type: 'answering', message: `Found answer for Q${questionNum}`, questionNum });
           await this.submitAnswer(answer);
           solved++;
         } else {
-          onProgress({
-            type: 'skip',
-            message: `Could not extract answer for Q${questionNum}, skipping`,
-            questionNum,
-          });
+          onProgress({ type: 'skip', message: `Could not extract answer for Q${questionNum}, skipping`, questionNum });
           failed++;
           await this.skipQuestion();
         }
       } catch (err) {
-        onProgress({
-          type: 'error',
-          message: `Error on Q${questionNum}: ${err.message}`,
-          questionNum,
-        });
+        onProgress({ type: 'error', message: `Error on Q${questionNum}: ${err.message}`, questionNum });
         failed++;
         await this.skipQuestion();
       }
 
       await humanDelay();
 
-      // Check if we're stuck (no new question loaded)
       const stillSamePage = await this.page.evaluate(() => {
-        return !document.querySelector(
-          '[class*="question"], [class*="problem"], [class*="task-content"]'
-        );
+        return !document.querySelector('[class*="question"], [class*="problem"], [class*="task-content"]');
       });
 
       if (stillSamePage && questionNum > 2) {
@@ -254,38 +235,21 @@ export class SparxBot {
 
   async extractQuestion() {
     return await this.page.evaluate(() => {
-      // Try multiple selectors for question content
       const selectors = [
-        '[class*="question-text"]',
-        '[class*="problem"]',
-        '[class*="stimulus"]',
-        '[class*="prompt"]',
-        '[data-testid*="question"]',
-        '.question',
-        'main p',
+        '[class*="question-text"]', '[class*="problem"]', '[class*="stimulus"]',
+        '[class*="prompt"]', '[data-testid*="question"]', '.question', 'main p',
       ];
 
       let text = '';
       for (const sel of selectors) {
         const el = document.querySelector(sel);
-        if (el?.textContent?.trim()) {
-          text = el.textContent.trim();
-          break;
-        }
+        if (el?.textContent?.trim()) { text = el.textContent.trim(); break; }
       }
 
-      // Look for answer input type
-      const hasMultipleChoice = document.querySelectorAll(
-        '[class*="choice"], [class*="option"], input[type="radio"]'
-      ).length > 0;
-      const hasNumberInput =
-        document.querySelector('input[type="number"], input[inputmode="numeric"]') !== null;
-      const hasTextInput =
-        document.querySelector(
-          'input[type="text"]:not([name*="school"]):not([name*="user"]):not([name*="pass"])'
-        ) !== null;
-      const hasDragDrop =
-        document.querySelector('[draggable="true"], [class*="drag"]') !== null;
+      const hasMultipleChoice = document.querySelectorAll('[class*="choice"], [class*="option"], input[type="radio"]').length > 0;
+      const hasNumberInput = document.querySelector('input[type="number"], input[inputmode="numeric"]') !== null;
+      const hasTextInput = document.querySelector('input[type="text"]:not([name*="school"]):not([name*="user"]):not([name*="pass"])') !== null;
+      const hasDragDrop = document.querySelector('[draggable="true"], [class*="drag"]') !== null;
 
       let type = 'unknown';
       if (hasMultipleChoice) type = 'multiple_choice';
@@ -293,36 +257,25 @@ export class SparxBot {
       else if (hasTextInput) type = 'text';
       else if (hasDragDrop) type = 'drag_drop';
 
-      // Get image URLs if any
-      const images = Array.from(
-        document.querySelectorAll('[class*="question"] img, main img')
-      ).map((img) => img.src);
-
+      const images = Array.from(document.querySelectorAll('[class*="question"] img, main img')).map((img) => img.src);
       return { text, type, images };
     });
   }
 
   async submitAnswer(answer) {
     if (answer.type === 'click') {
-      // Click on a specific element (multiple choice)
       await this.page.click(answer.selector);
     } else if (answer.type === 'type') {
-      // Type into an input field
       const input = await this.page.waitForSelector(answer.selector, { timeout: 5000 });
       await input.fill(String(answer.value));
     } else if (answer.type === 'select') {
-      // Click the matching option
       await this.page.click(`text="${answer.value}"`);
     }
 
     await delay(800 + Math.random() * 1200);
 
-    // Click submit/next button
     const submitBtn = await this.page
-      .waitForSelector(
-        'button:has-text("Submit"), button:has-text("Next"), button:has-text("Check"), button[class*="submit"], button[class*="next"]',
-        { timeout: 5000 }
-      )
+      .waitForSelector('button:has-text("Submit"), button:has-text("Next"), button:has-text("Check"), button[class*="submit"], button[class*="next"]', { timeout: 5000 })
       .catch(() => null);
 
     if (submitBtn) {
@@ -332,12 +285,8 @@ export class SparxBot {
   }
 
   async skipQuestion() {
-    // Try skip/next buttons
     const skipBtn = await this.page
-      .waitForSelector(
-        'button:has-text("Skip"), button:has-text("Next"), button:has-text("I don\'t know")',
-        { timeout: 3000 }
-      )
+      .waitForSelector('button:has-text("Skip"), button:has-text("Next"), button:has-text("I don\'t know")', { timeout: 3000 })
       .catch(() => null);
 
     if (skipBtn) {

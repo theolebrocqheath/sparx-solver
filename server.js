@@ -17,14 +17,34 @@ function openBrowser(url) {
 app.use(express.json());
 
 const activeSessions = new Map();
+let schoolsCache = null;
 
 app.get('/api/status', (req, res) => {
   res.json({ ok: true, version: '1.0.0' });
 });
 
+app.get('/api/schools', async (req, res) => {
+  try {
+    if (!schoolsCache) {
+      const resp = await fetch('https://static.sparx-learning.com/sl/spx001/data.txt');
+      const b64 = await resp.text();
+      schoolsCache = JSON.parse(Buffer.from(b64, 'base64').toString());
+    }
+    const q = (req.query.q || '').toLowerCase();
+    if (!q || q.length < 2) return res.json([]);
+    const matches = schoolsCache
+      .filter((s) => s.n.toLowerCase().includes(q) || s.t.toLowerCase().includes(q))
+      .slice(0, 10)
+      .map((s) => ({ slug: s.u, id: s.i, name: s.n, town: s.t, address: s.a }));
+    res.json(matches);
+  } catch (err) {
+    res.status(500).json({ error: 'Could not load schools' });
+  }
+});
+
 app.post('/api/login', async (req, res) => {
-  const { school, username, password } = req.body;
-  if (!school || !username || !password) {
+  const { schoolSlug, username, password } = req.body;
+  if (!schoolSlug || !username || !password) {
     return res.status(400).json({ error: 'School, username, and password are required' });
   }
 
@@ -32,7 +52,26 @@ app.post('/api/login', async (req, res) => {
   const bot = new SparxBot();
 
   try {
-    const result = await bot.login(school, username, password);
+    const result = await bot.login(schoolSlug, username, password);
+    activeSessions.set(sessionId, bot);
+    res.json({ sessionId, ...result });
+  } catch (err) {
+    await bot.close();
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.post('/api/login-google', async (req, res) => {
+  const { schoolSlug } = req.body;
+  if (!schoolSlug) {
+    return res.status(400).json({ error: 'School is required' });
+  }
+
+  const sessionId = crypto.randomUUID();
+  const bot = new SparxBot();
+
+  try {
+    const result = await bot.loginWithGoogle(schoolSlug);
     activeSessions.set(sessionId, bot);
     res.json({ sessionId, ...result });
   } catch (err) {
