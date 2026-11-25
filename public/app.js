@@ -166,15 +166,16 @@ async function loadHomework() {
       list.innerHTML = '';
       homeworkTasks.forEach((task) => {
         const item = document.createElement('div');
-        item.className = 'homework-item';
+        const done = task.status === 'Completed';
+        item.className = `homework-item${done ? ' hw-done' : ''}`;
         item.innerHTML = `
           <div class="hw-info">
             <h3>${escapeHtml(task.name)}</h3>
-            <p>${escapeHtml(task.status || 'Not started')}${task.questions ? ' &middot; ' + escapeHtml(task.questions) : ''}</p>
+            <p class="${done ? 'hw-completed' : ''}">${escapeHtml(task.status || 'Not started')}</p>
           </div>
-          <div class="hw-action">Solve &rarr;</div>
+          <div class="hw-action">${done ? '&#10003; Done' : 'Solve &rarr;'}</div>
         `;
-        item.addEventListener('click', () => startSolving(task));
+        if (!done) item.addEventListener('click', () => startSolving(task));
         list.appendChild(item);
       });
       list.classList.remove('hidden');

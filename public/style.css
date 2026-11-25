@@ -219,6 +219,24 @@ button[type="submit"]:disabled {
   white-space: nowrap;
 }
 
+.homework-item.hw-done {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.homework-item.hw-done:hover {
+  border-color: var(--border);
+  background: var(--bg);
+}
+
+.homework-item.hw-done .hw-action {
+  color: var(--success);
+}
+
+.hw-completed {
+  color: var(--success);
+}
+
 .stats-row {
   display: flex;
   gap: 16px;
