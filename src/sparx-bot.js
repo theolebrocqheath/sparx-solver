@@ -489,6 +489,19 @@ export class SparxBot {
 
   async extractQuestion() {
     return await this.page.evaluate(() => {
+      function isFractionContainer(el) {
+        const children = el.children;
+        if (children.length < 2 || children.length > 4) return false;
+        const cls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
+        if (cls.includes('fraction') || cls.includes('frac')) return true;
+        const style = window.getComputedStyle(el);
+        const isVertical = style.display === 'flex' && style.flexDirection === 'column';
+        const isInline = style.display === 'inline-flex' || style.display === 'inline-block';
+        if (!isVertical && !isInline && !cls.includes('frac')) return false;
+        const nums = Array.from(children).filter(c => /^\d+$/.test(c.textContent.trim()));
+        return nums.length >= 2;
+      }
+
       function readMathText(el) {
         if (!el) return '';
         let result = '';
@@ -498,17 +511,29 @@ export class SparxBot {
           } else if (node.nodeType === Node.ELEMENT_NODE) {
             const cls = (typeof node.className === 'string' ? node.className : '').toLowerCase();
             const tag = node.tagName.toLowerCase();
-            if (cls.includes('fraction') || cls.includes('frac')) {
-              const parts = node.querySelectorAll('span, div');
-              if (parts.length >= 2) {
-                const num = parts[0].textContent.trim();
-                const den = parts[parts.length - 1].textContent.trim();
-                result += `${num}/${den}`;
+            if (tag === 'script' || tag === 'style') continue;
+
+            if (isFractionContainer(node)) {
+              const numEls = Array.from(node.children).filter(c => /^\d+$/.test(c.textContent.trim()));
+              if (numEls.length >= 2) {
+                result += `${numEls[0].textContent.trim()}/${numEls[numEls.length - 1].textContent.trim()}`;
                 continue;
               }
             }
-            if (tag === 'sup') { result += node.textContent; continue; }
-            if (tag === 'sub') { result += node.textContent; continue; }
+
+            if (cls.includes('fraction') || cls.includes('frac')) {
+              const parts = node.querySelectorAll('span, div');
+              if (parts.length >= 2) {
+                const numParts = Array.from(parts).filter(p => /^\d+$/.test(p.textContent.trim()));
+                if (numParts.length >= 2) {
+                  result += `${numParts[0].textContent.trim()}/${numParts[numParts.length - 1].textContent.trim()}`;
+                  continue;
+                }
+              }
+            }
+
+            if (tag === 'sup') { result += '^' + node.textContent; continue; }
+            if (tag === 'sub') { result += '_' + node.textContent; continue; }
             result += readMathText(node);
           }
         }
@@ -534,41 +559,47 @@ export class SparxBot {
         if (/^(Completed|Not started|In progress)$/i.test(line)) return true;
         if (/^\d+\/\d+$/.test(line)) return true;
         if (/^(XP|Bookwork code)/i.test(line)) return true;
-        // Single/two word lines that aren't math
+        if (/^Previous\s+Answer/i.test(line)) return true;
+        if (/^[A-Z][a-z]+\s+[A-Z]{2,}$/.test(line)) return true;
         if (line.length <= 3 && !/\d/.test(line)) return true;
         return false;
       };
 
-      const bodyText = document.body.innerText || '';
-      const lines = bodyText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-
-      // Collect all non-noise lines
-      const questionLines = [];
-      for (const line of lines) {
-        if (isNoise(line)) continue;
-        // Stop at button-like lines at the end
-        if (/^(Submit|Check answer)/i.test(line)) break;
-        questionLines.push(line);
-      }
-
-      let text = questionLines.join(' ').replace(/\s+/g, ' ').trim();
-
-      // Fallback: try specific DOM selectors
-      if (!text || text.length < 10) {
-        const selectors = [
-          '[class*="question"]', '[class*="stimulus"]', '[class*="prompt"]',
-          '[class*="problem"]', '[class*="wac-text"]',
-        ];
-        for (const sel of selectors) {
-          const el = document.querySelector(sel);
-          if (el?.textContent?.trim().length > 10) {
-            text = readMathText(el).replace(/\s+/g, ' ').trim();
-            break;
-          }
+      // First try: use readMathText on specific question containers
+      const questionSelectors = [
+        '[class*="question-content"]', '[class*="stimulus"]', '[class*="wac-text"]',
+        '[class*="question-text"]', '[class*="prompt-text"]',
+      ];
+      let text = '';
+      for (const sel of questionSelectors) {
+        const el = document.querySelector(sel);
+        if (el?.textContent?.trim().length > 10) {
+          text = readMathText(el).replace(/\s+/g, ' ').trim();
+          break;
         }
       }
 
-      // Last resort: grab text from main content area
+      // Second try: parse body innerText with noise filtering
+      if (!text || text.length < 10) {
+        const bodyText = document.body.innerText || '';
+        const lines = bodyText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+        const questionLines = [];
+        for (const line of lines) {
+          if (isNoise(line)) continue;
+          if (/^(Submit|Check answer)/i.test(line)) break;
+          questionLines.push(line);
+        }
+
+        text = questionLines.join(' ').replace(/\s+/g, ' ').trim();
+      }
+
+      // Strip any remaining student name pattern (FirstName LASTNAME)
+      text = text.replace(/^[A-Z][a-z]+\s+[A-Z]{2,}\s*/g, '');
+      // Strip "Previous Answer" and anything after it at the end
+      text = text.replace(/\s*Previous\s+Answer.*$/i, '');
+
+      // Third try: grab from main content
       if (!text || text.length < 10) {
         const main = document.querySelector('main') || document.querySelector('[class*="content"]');
         if (main) {
@@ -595,14 +626,28 @@ export class SparxBot {
     if (answer.type === 'click') {
       await this.page.click(answer.selector);
     } else if (answer.type === 'type') {
-      const input = await this.page.waitForSelector(
-        'input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([name*="school"]):not([name*="user"]):not([name*="pass"]), [contenteditable="true"]',
-        { timeout: 5000 }
-      ).catch(() => null);
-      if (input) {
-        await input.click();
+      const value = String(answer.value);
+
+      const inputs = await this.page.$$('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([name*="school"]):not([name*="user"]):not([name*="pass"])');
+      const contentEditable = await this.page.$('[contenteditable="true"]');
+
+      if (value.includes('/') && inputs.length >= 2) {
+        const [num, den] = value.split('/');
+        await inputs[0].click();
+        await delay(100);
+        await inputs[0].fill(num.trim());
         await delay(200);
-        await input.fill(String(answer.value));
+        await inputs[1].click();
+        await delay(100);
+        await inputs[1].fill(den.trim());
+      } else if (inputs.length > 0) {
+        await inputs[0].click();
+        await delay(100);
+        await inputs[0].fill(value);
+      } else if (contentEditable) {
+        await contentEditable.click();
+        await delay(100);
+        await contentEditable.fill(value);
       }
     }
 
